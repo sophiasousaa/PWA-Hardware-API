@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hotel Hunter PWA</title>
+
+    <!-- Meta tags para PWA -->
+    <meta name="theme-color" content="#1a202c"/>
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="https://placehold.co/192x192/1a202c/ffffff?text=Hotel">
+
+    <!-- Tailwind CSS para um design rápido e moderno -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Ícones Lucide -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Estilos personalizados -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Animação do spinner */
+        .spinner {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white antialiased">
+
+    <div class="container mx-auto p-4 max-w-lg min-h-screen flex flex-col">
+        <!-- Cabeçalho -->
+        <header class="text-center my-6">
+            <div class="flex items-center justify-center space-x-3">
+                <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-bed-double text-indigo-400"><path d="M2 20v-8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8"/><path d="M4 10V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4"/><path d="M12 4v6"/><path d="M2 18h20"/><path d="M6 14h.01"/><path d="M18 14h.01"/></svg>
+                <h1 class="text-3xl font-bold text-gray-100">Hotel Hunter</h1>
+            </div>
+            <p class="text-gray-400 mt-2">Encontre hotéis perto de você com um toque.</p>
+        </header>
+
+        <!-- Área de Ação -->
+        <main class="flex-grow flex flex-col items-center justify-center">
+            <button id="find-hotels-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-full shadow-lg transition-transform duration-200 ease-in-out transform hover:scale-105 flex items-center space-x-3">
+                <i data-lucide="map-pin"></i>
+                <span>Encontrar Hotéis Próximos</span>
+            </button>
+
+            <!-- Estados da UI -->
+            <div id="loading" class="text-center mt-8 hidden">
+                <div class="spinner w-12 h-12 rounded-full border-4 border-gray-600 border-t-indigo-500 mx-auto"></div>
+                <p class="mt-4 text-gray-400">Procurando sua localização e hotéis...</p>
+            </div>
+
+            <div id="error" class="text-center mt-8 p-4 bg-red-900/50 border border-red-700 rounded-lg hidden">
+                <p id="error-message"></p>
+            </div>
+
+            <!-- Resultados -->
+            <div id="results" class="w-full mt-8">
+                <!-- Os hotéis serão inseridos aqui -->
+            </div>
+        </main>
+
+        <footer class="text-center text-gray-600 text-sm py-4">
+            <p>Powered by OpenStreetMap API</p>
+        </footer>
+    </div>
+
+    <script>
+        // Inicializa os ícones
+        lucide.createIcons();
+
+        // Referências aos elementos do DOM
+        const findButton = document.getElementById('find-hotels-btn');
+        const loadingDiv = document.getElementById('loading');
+        const errorDiv = document.getElementById('error');
+        const errorMessage = document.getElementById('error-message');
+        const resultsDiv = document.getElementById('results');
+
+        // Event listener para o botão principal
+        findButton.addEventListener('click', () => {
+            // 1. Resetar a UI
+            resultsDiv.innerHTML = '';
+            errorDiv.classList.add('hidden');
+            loadingDiv.classList.remove('hidden');
+            findButton.disabled = true;
+            findButton.classList.add('opacity-50', 'cursor-not-allowed');
+
+            // 2. Obter a geolocalização do usuário
+            if (!navigator.geolocation) {
+                showError("Geolocalização não é suportada pelo seu navegador.");
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(geolocationSuccess, geolocationError, {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            });
+        });
+
+        // Callback de sucesso da geolocalização
+        async function geolocationSuccess(position) {
+            const { latitude, longitude } = position.coords;
+            try {
+                // 3. Chamar a API de hotéis com as coordenadas
+                const hotels = await fetchHotels(latitude, longitude);
+                // 4. Renderizar os resultados
+                displayHotels(hotels, latitude, longitude);
+            } catch (err) {
+                showError("Não foi possível buscar os hotéis. Tente novamente.");
+                console.error(err);
+            } finally {
+                // Resetar UI de carregamento
+                loadingDiv.classList.add('hidden');
+                findButton.disabled = false;
+                findButton.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+        
+        // Callback de erro da geolocalização
+        function geolocationError(error) {
+            let message = "Ocorreu um erro ao obter a localização.";
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    message = "Você negou o acesso à sua localização.";
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    message = "Informação de localização não está disponível.";
+                    break;
+                case error.TIMEOUT:
+                    message = "A requisição para obter a localização expirou.";
+                    break;
+            }
+            showError(message);
+        }
+
+        // Função para buscar hotéis usando a Overpass API (OpenStreetMap)
+        async function fetchHotels(lat, lon, radius = 5000) { // Raio de 5km
+            // A query busca por 'nós' (nodes), 'caminhos' (ways) e 'relações' (relations)
+            // que tenham a tag 'tourism'='hotel' dentro do raio especificado.
+            const query = `
+                [out:json];
+                (
+                  nwr["tourism"="hotel"](around:${radius},${lat},${lon});
+                );
+                out body;
+            `;
+            const encodedQuery = encodeURIComponent(query);
+            const url = `https://overpass-api.de/api/interpreter?data=${encodedQuery}`;
+            
+            console.log("Buscando em:", url);
+
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+            
+            // Filtra e formata os resultados para pegar apenas aqueles com nome
+            return data.elements
+                .filter(element => element.tags && element.tags.name)
+                .map(element => ({
+                    id: element.id,
+                    name: element.tags.name,
+                    lat: element.lat || (element.center && element.center.lat),
+                    lon: element.lon || (element.center && element.center.lon)
+                }));
+        }
+
+        // Função para mostrar os hotéis na tela
+        function displayHotels(hotels, userLat, userLon) {
+            if (hotels.length === 0) {
+                showError("Nenhum hotel encontrado em um raio de 5km.");
+                return;
+            }
+
+            const hotelsHtml = hotels.map(hotel => {
+                const mapUrl = `https://www.google.com/maps?q=${hotel.lat},${hotel.lon}`;
+                return `
+                    <div class="bg-gray-800 rounded-lg p-4 mb-3 flex items-center justify-between shadow-md animate-fade-in">
+                        <div>
+                            <h3 class="font-semibold text-lg text-indigo-300">${hotel.name}</h3>
+                        </div>
+                        <a href="${mapUrl}" target="_blank" class="bg-gray-700 hover:bg-gray-600 text-gray-300 font-bold p-3 rounded-full transition-colors">
+                            <i data-lucide="send"></i>
+                        </a>
+                    </div>
+                `;
+            }).join('');
+
+            resultsDiv.innerHTML = `<h2 class="text-xl font-bold mb-4 text-center">Hotéis encontrados:</h2>${hotelsHtml}`;
+            lucide.createIcons(); // Recria os ícones após adicionar novo HTML
+        }
+
+        // Função para exibir erros
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorDiv.classList.remove('hidden');
+            loadingDiv.classList.add('hidden');
+            findButton.disabled = false;
+            findButton.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+
+        // Registrar o Service Worker para PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js')
+                    .then(registration => console.log('ServiceWorker registrado com sucesso:', registration.scope))
+                    .catch(error => console.log('Falha ao registrar ServiceWorker:', error));
+            });
+        }
+    </script>
+
+</body>
+</html>
+
