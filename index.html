@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hotel Hunter PWA</title>
+
+    <!-- Meta tags para PWA -->
+    <meta name="theme-color" content="#1a202c"/>
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="https://placehold.co/192x192/1a202c/ffffff?text=Hotel">
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Ícones Lucide -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Estilos personalizados -->
+    <style>
+        :root {
+            --fallback-titlebar-area-height: 40px;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .spinner {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Suporte para Window Controls Overlay */
+        .title-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: var(--fallback-titlebar-area-height);
+            height: env(titlebar-area-height, var(--fallback-titlebar-area-height));
+            -webkit-app-region: drag;
+            app-region: drag;
+            z-index: 100;
+        }
+        .main-content {
+             padding-top: var(--fallback-titlebar-area-height);
+             padding-top: env(titlebar-area-height, var(--fallback-titlebar-area-height));
+        }
+        /* Permite clicar em botões na área da barra de título */
+        .title-bar-controls {
+            -webkit-app-region: no-drag;
+            app-region: no-drag;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white antialiased">
+    <!-- Para Window Controls Overlay -->
+    <div class="title-bar"></div>
+
+    <div class="container mx-auto p-4 max-w-lg min-h-screen flex flex-col main-content">
+        <!-- Cabeçalho -->
+        <header class="text-center my-6">
+             <div class="flex items-center justify-center space-x-3">
+                <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-bed-double text-indigo-400"><path d="M2 20v-8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8"/><path d="M4 10V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4"/><path d="M12 4v6"/><path d="M2 18h20"/><path d="M6 14h.01"/><path d="M18 14h.01"/></svg>
+                <h1 class="text-3xl font-bold text-gray-100">Hotel Hunter</h1>
+            </div>
+            <p class="text-gray-400 mt-2">Encontre hotéis, salve notas e explore o poder do PWA.</p>
+        </header>
+
+        <!-- Controles de PWA -->
+        <div class="text-center my-4 space-y-2">
+            <button id="enable-notifications-btn" class="bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded-full shadow-md transition-transform duration-200 ease-in-out transform hover:scale-105 text-sm">
+                Ativar Notificações
+            </button>
+            <p id="status-message" class="text-gray-400 h-5 text-sm"></p>
+        </div>
+
+        <!-- Conteúdo compartilhado -->
+        <div id="shared-content-container" class="w-full my-4 hidden">
+            <h2 class="text-lg font-bold mb-2">Conteúdo Recebido:</h2>
+            <div id="shared-content" class="bg-gray-800 p-4 rounded-lg text-sm break-words"></div>
+        </div>
+        
+        <!-- Área de Ação -->
+        <main class="flex-grow flex flex-col items-center">
+            <button id="find-hotels-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-full shadow-lg transition-transform duration-200 ease-in-out transform hover:scale-105 flex items-center space-x-3">
+                <i data-lucide="map-pin"></i>
+                <span>Encontrar Hotéis Próximos</span>
+            </button>
+
+            <div id="loading" class="text-center mt-8 hidden">
+                <div class="spinner w-12 h-12 rounded-full border-4 border-gray-600 border-t-indigo-500 mx-auto"></div>
+                <p class="mt-4 text-gray-400">Procurando sua localização e hotéis...</p>
+            </div>
+
+            <div id="error" class="text-center mt-8 p-4 bg-red-900/50 border border-red-700 rounded-lg hidden">
+                <p id="error-message"></p>
+            </div>
+            
+            <div id="results" class="w-full mt-8"></div>
+        </main>
+
+        <footer class="text-center text-gray-600 text-sm py-4">
+            <p>Powered by OpenStreetMap API</p>
+        </footer>
+    </div>
+
+    <script>
+    // ----------------------------------------------------
+    // 1. SETUP & ELEMENTOS DO DOM
+    // ----------------------------------------------------
+    lucide.createIcons();
+    const findButton = document.getElementById('find-hotels-btn');
+    const loadingDiv = document.getElementById('loading');
+    const errorDiv = document.getElementById('error');
+    const errorMessage = document.getElementById('error-message');
+    const resultsDiv = document.getElementById('results');
+    const notificationsButton = document.getElementById('enable-notifications-btn');
+    const statusMessage = document.getElementById('status-message');
+    const sharedContentContainer = document.getElementById('shared-content-container');
+    const sharedContentDiv = document.getElementById('shared-content');
+    let db; // Referência para o IndexedDB
+
+    // ----------------------------------------------------
+    // 2. LÓGICA DO BANCO DE DADOS (INDEXEDDB) PARA OFFLINE SUPPORT
+    // ----------------------------------------------------
+    function initDB() {
+        const request = indexedDB.open('HotelHunterDB', 1);
+
+        request.onupgradeneeded = event => {
+            db = event.target.result;
+            db.createObjectStore('notes', { keyPath: 'hotelId' });
+        };
+
+        request.onsuccess = event => {
+            db = event.target.result;
+        };
+        
+        request.onerror = event => console.error("Erro no IndexedDB:", event.target.errorCode);
+    }
+
+    function saveNoteToDB(hotelId, noteText) {
+        if (!db) return Promise.reject("DB não inicializado");
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(['notes'], 'readwrite');
+            const store = transaction.objectStore('notes');
+            store.put({ hotelId, text: noteText });
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = event => reject(event.target.error);
+        });
+    }
+
+    function getNoteFromDB(hotelId) {
+        if (!db) return Promise.reject("DB não inicializado");
+        return new Promise((resolve) => {
+            const transaction = db.transaction(['notes'], 'readonly');
+            const store = transaction.objectStore('notes');
+            const request = store.get(hotelId);
+            request.onsuccess = event => resolve(event.target.result?.text || '');
+        });
+    }
+
+    // ----------------------------------------------------
+    // 3. INICIALIZAÇÃO DA APLICAÇÃO
+    // ----------------------------------------------------
+    window.addEventListener('DOMContentLoaded', () => {
+        initDB();
+        registerServiceWorker();
+        handleInitialLaunch();
+        findButton.addEventListener('click', findHotels);
+        notificationsButton.addEventListener('click', requestNotificationPermission);
+    });
+    
+    // ----------------------------------------------------
+    // 4. LÓGICA PRINCIPAL (GEOLOCALIZAÇÃO E BUSCA)
+    // ----------------------------------------------------
+    function findHotels() {
+        resultsDiv.innerHTML = '';
+        errorDiv.classList.add('hidden');
+        loadingDiv.classList.remove('hidden');
+        findButton.disabled = true;
+        findButton.classList.add('opacity-50', 'cursor-not-allowed');
+
+        if (!navigator.geolocation) {
+            showError("Geolocalização não é suportada.");
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition(geolocationSuccess, geolocationError, { enableHighAccuracy: true });
+    }
+
+    async function geolocationSuccess(position) {
+        const { latitude, longitude } = position.coords;
+        try {
+            const hotels = await fetchHotelsAPI(latitude, longitude);
+            displayHotels(hotels);
+        } catch (err) {
+            showError("Não foi possível buscar os hotéis. Tente novamente.");
+            console.error(err);
+        } finally {
+            loadingDiv.classList.add('hidden');
+            findButton.disabled = false;
+            findButton.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+    }
+    
+    function geolocationError(error) {
+        let message = "Ocorreu um erro ao obter a localização.";
+        if (error.code === error.PERMISSION_DENIED) message = "Você negou o acesso à sua localização.";
+        showError(message);
+    }
+
+    async function fetchHotelsAPI(lat, lon, radius = 5000) {
+        const query = `[out:json];(nwr["tourism"="hotel"](around:${radius},${lat},${lon}););out body;`;
+        const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        return data.elements
+            .filter(e => e.tags?.name)
+            .map(e => ({ id: e.id, name: e.tags.name, lat: e.lat || e.center?.lat, lon: e.lon || e.center?.lon }));
+    }
+
+    // ----------------------------------------------------
+    // 5. MANIPULADORES DE RECURSOS PWA
+    // ----------------------------------------------------
+    async function registerServiceWorker() {
+        if ('serviceWorker' in navigator) {
+            try {
+                const registration = await navigator.serviceWorker.register('/sw.js');
+                console.log('ServiceWorker registrado:', registration.scope);
+                
+                // Registrar Periodic Background Sync
+                const status = await navigator.permissions.query({name: 'periodic-background-sync'});
+                if (status.state === 'granted') {
+                    await registration.periodicSync.register('fetch-hotels-periodically', {
+                        minInterval: 24 * 60 * 60 * 1000, // 24 horas
+                    });
+                    console.log('Periodic Sync registrado.');
+                }
+            } catch (error) {
+                console.log('Falha ao registrar ServiceWorker:', error);
+            }
+        }
+    }
+
+    function handleInitialLaunch() {
+        // Launch Handler (File Handling)
+        if ('launchQueue' in window) {
+            window.launchQueue.setConsumer(async (launchParams) => {
+                if (!launchParams.files.length) return;
+                const fileHandle = launchParams.files[0];
+                const file = await fileHandle.getFile();
+                const text = await file.text();
+                displaySharedContent(`Conteúdo do arquivo ${file.name}:`, text);
+            });
+        }
+
+        // Share Target e Protocol Handler
+        const urlParams = new URLSearchParams(window.location.search);
+        const title = urlParams.get('title');
+        const text = urlParams.get('text');
+        const url = urlParams.get('url');
+        const query = urlParams.get('query'); 
+
+        if (title || text || url || query) {
+            let content = '';
+            if(query) content += `Busca via Protocolo: ${decodeURIComponent(query)}\n`;
+            if(title) content += `Título: ${title}\n`;
+            if(text) content += `Texto: ${text}\n`;
+            if(url) content += `URL: ${url}`;
+            displaySharedContent('Conteúdo recebido:', content);
+        }
+    }
+
+    // Push Notifications
+    async function requestNotificationPermission() {
+        if (!('Notification' in window)) {
+            showStatus("Notificações não são suportadas.");
+            return;
+        }
+
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+            showStatus("Permissão de notificação concedida!");
+            subscribeUserToPush();
+        } else {
+            showStatus("Permissão de notificação negada.");
+        }
+    }
+    
+    async function subscribeUserToPush() {
+        try {
+            const registration = await navigator.serviceWorker.ready;
+            const subscription = await registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                // Chave VAPID pública gerada no seu servidor
+                applicationServerKey: 'YOUR_PUBLIC_VAPID_KEY' 
+            });
+            console.log('Inscrição Push recebida: ', JSON.stringify(subscription));
+            showStatus("Inscrito para notificações push!");
+        } catch (error) {
+            console.error('Falha ao inscrever no Push: ', error);
+            showStatus("Falha ao se inscrever para notificações.");
+        }
+    }
+
+    // Background Sync
+    async function handleSaveNote(hotelId, noteText) {
+        try {
+            await saveNoteToDB(hotelId, noteText);
+            showStatus(`Nota para hotel ${hotelId} salva localmente.`);
+
+            if ('serviceWorker' in navigator && 'SyncManager' in window) {
+                const registration = await navigator.serviceWorker.ready;
+                await registration.sync.register(`sync-note:${hotelId}`);
+                showStatus("Nota será sincronizada quando houver conexão.");
+            } else {
+                console.log("Enviando nota para o servidor (simulado)...", {hotelId, noteText});
+            }
+        } catch (error) {
+            console.error("Erro ao salvar nota:", error);
+            showStatus("Erro ao salvar a nota.");
+        }
+    }
+
+
+    // ----------------------------------------------------
+    // 6. FUNÇÕES DE UI E DISPLAY
+    // ----------------------------------------------------
+    async function displayHotels(hotels) {
+        if (hotels.length === 0) {
+            showError("Nenhum hotel encontrado em um raio de 5km.");
+            return;
+        }
+
+        let hotelsHtml = '';
+        for (const hotel of hotels) {
+            const mapUrl = `https://www.google.com/maps?q=${hotel.lat},${hotel.lon}`;
+            const savedNote = await getNoteFromDB(hotel.id);
+            hotelsHtml += `
+                <div class="bg-gray-800 rounded-lg p-4 mb-3 shadow-md flex flex-col">
+                    <div class="flex items-center justify-between">
+                        <h3 class="font-semibold text-lg text-indigo-300">${hotel.name}</h3>
+                        <a href="${mapUrl}" target="_blank" class="bg-gray-700 hover:bg-gray-600 text-gray-300 p-3 rounded-full transition-colors">
+                            <i data-lucide="send"></i>
+                        </a>
+                    </div>
+                    <!-- Note Taking -->
+                    <div class="note-section mt-4">
+                        <textarea id="note-${hotel.id}" class="w-full bg-gray-700 p-2 rounded-md text-sm placeholder-gray-400" rows="3" placeholder="Suas anotações sobre este hotel...">${savedNote}</textarea>
+                        <button data-hotel-id="${hotel.id}" class="save-note-btn mt-2 w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md transition-colors text-sm">Salvar Anotação</button>
+                    </div>
+                </div>
+            `;
+        }
+        
+        resultsDiv.innerHTML = `<h2 class="text-xl font-bold mb-4 text-center">Hotéis encontrados:</h2>${hotelsHtml}`;
+        lucide.createIcons();
+        
+        document.querySelectorAll('.save-note-btn').forEach(button => {
+            button.addEventListener('click', (event) => {
+                const hotelId = event.target.dataset.hotelId;
+                const noteText = document.getElementById(`note-${hotelId}`).value;
+                handleSaveNote(hotelId, noteText);
+            });
+        });
+    }
+
+    function showError(message) {
+        errorMessage.textContent = message;
+        errorDiv.classList.remove('hidden');
+        loadingDiv.classList.add('hidden');
+        findButton.disabled = false;
+        findButton.classList.remove('opacity-50', 'cursor-not-allowed');
+    }
+    
+    function showStatus(message) {
+        statusMessage.textContent = message;
+        setTimeout(() => { statusMessage.textContent = ''; }, 4000);
+    }
+    
+    function displaySharedContent(title, content) {
+        sharedContentContainer.classList.remove('hidden');
+        sharedContentDiv.innerHTML = `<strong>${title}</strong><pre class="mt-2 whitespace-pre-wrap">${content}</pre>`;
+    }
+
+    </script>
+</body>
+</html>
+
